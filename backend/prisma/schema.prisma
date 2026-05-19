@@ -1,0 +1,451 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum ChatType {
+  DIRECT
+  GROUP
+  CHANNEL
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  VOICE_NOTE
+  DOCUMENT
+  STICKER
+  LOCATION
+  SYSTEM
+}
+
+enum MessageStatus {
+  SENDING
+  SENT
+  DELIVERED
+  SEEN
+  FAILED
+}
+
+enum CallType {
+  VOICE
+  VIDEO
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  ENDED
+  MISSED
+  DECLINED
+  BUSY
+}
+
+enum NotificationType {
+  MESSAGE
+  CALL
+  REACTION
+  MENTION
+  GROUP_INVITE
+  SYSTEM
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum PresenceStatus {
+  ONLINE
+  OFFLINE
+  AWAY
+}
+
+// ═══════════════════════════════════════════════
+// USER
+// ═══════════════════════════════════════════════
+
+model User {
+  id          String     @id @default(uuid())
+  phone       String     @unique
+  countryCode String     @map("country_code")
+  name        String
+  username    String     @unique
+  avatar      String?
+  about       String?    @default("Hey! I'm using Hey 👋")
+  isVerified  Boolean    @default(false) @map("is_verified")
+  status      UserStatus @default(ACTIVE)
+  lastSeen    DateTime?  @map("last_seen")
+  isOnline    Boolean    @default(false) @map("is_online")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  // E2EE preparation — store public key for future Signal Protocol
+  publicKey   String?    @map("public_key")
+  keyVersion  Int        @default(0) @map("key_version")
+
+  // Relations
+  otps              OTP[]
+  sessions          Session[]
+  devices           Device[]
+  sentMessages      Message[]           @relation("SentMessages")
+  reactions         Reaction[]
+  chatMemberships   ChatMember[]
+  contacts          Contact[]           @relation("UserContacts")
+  contactOf         Contact[]           @relation("ContactOf")
+  blockedUsers      BlockedUser[]       @relation("Blocker")
+  blockedBy         BlockedUser[]       @relation("BlockedBy")
+  notifications     Notification[]
+  callsInitiated    Call[]              @relation("Caller")
+  callParticipations CallParticipant[]
+  statuses          Status[]
+  readReceipts      ReadReceipt[]
+  attachments       Attachment[]
+
+  @@index([phone])
+  @@index([username])
+  @@map("users")
+}
+
+// ═══════════════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════════════
+
+model OTP {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  code      String
+  phone     String
+  expiresAt DateTime @map("expires_at")
+  verified  Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([phone])
+  @@index([userId])
+  @@map("otps")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  userId       String   @map("user_id")
+  refreshToken String   @unique @map("refresh_token")
+  deviceId     String?  @map("device_id")
+  userAgent    String?  @map("user_agent")
+  ipAddress    String?  @map("ip_address")
+  isValid      Boolean  @default(true) @map("is_valid")
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device Device? @relation(fields: [deviceId], references: [id])
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@map("sessions")
+}
+
+model Device {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  name       String
+  platform   String   // ios, android, web
+  fcmToken   String?  @map("fcm_token")  // for push notifications
+  isActive   Boolean  @default(true) @map("is_active")
+  lastActive DateTime @default(now()) @map("last_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessions Session[]
+
+  @@unique([userId, name])
+  @@index([userId])
+  @@map("devices")
+}
+
+// ═══════════════════════════════════════════════
+// CHATS
+// ═══════════════════════════════════════════════
+
+model Chat {
+  id          String   @id @default(uuid())
+  type        ChatType
+  name        String?
+  description String?
+  avatar      String?
+  isEncrypted Boolean  @default(false) @map("is_encrypted")
+  createdBy   String   @map("created_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  members      ChatMember[]
+  messages     Message[]
+  pinnedMessage Message?   @relation("PinnedMessage", fields: [pinnedMessageId], references: [id])
+  pinnedMessageId String?  @unique @map("pinned_message_id")
+
+  @@index([createdBy])
+  @@map("chats")
+}
+
+model ChatMember {
+  id           String     @id @default(uuid())
+  chatId       String     @map("chat_id")
+  userId       String     @map("user_id")
+  role         MemberRole @default(MEMBER)
+  isPinned     Boolean    @default(false) @map("is_pinned")
+  isMuted      Boolean    @default(false) @map("is_muted")
+  isArchived   Boolean    @default(false) @map("is_archived")
+  unreadCount  Int        @default(0) @map("unread_count")
+  lastReadAt   DateTime?  @map("last_read_at")
+  joinedAt     DateTime   @default(now()) @map("joined_at")
+  leftAt       DateTime?  @map("left_at")
+  notifyUntil  DateTime?  @map("notify_until") // mute until
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@index([chatId])
+  @@index([userId])
+  @@map("chat_members")
+}
+
+// ═══════════════════════════════════════════════
+// MESSAGES
+// ═══════════════════════════════════════════════
+
+model Message {
+  id          String        @id @default(uuid())
+  chatId      String        @map("chat_id")
+  senderId    String        @map("sender_id")
+  type        MessageType   @default(TEXT)
+  text        String?
+  status      MessageStatus @default(SENT)
+  isEdited    Boolean       @default(false) @map("is_edited")
+  isDeleted   Boolean       @default(false) @map("is_deleted")
+  isForwarded Boolean       @default(false) @map("is_forwarded")
+  deletedAt   DateTime?     @map("deleted_at")
+  editedAt    DateTime?     @map("edited_at")
+
+  // Threading
+  replyToId   String?   @map("reply_to_id")
+  replyTo     Message?  @relation("Replies", fields: [replyToId], references: [id])
+  replies     Message[] @relation("Replies")
+
+  // E2EE preparation
+  encryptedContent String? @map("encrypted_content")
+  iv               String? // initialization vector
+
+  // Metadata (JSON: e.g. location coords, voice note waveform, etc.)
+  metadata Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  chat        Chat         @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender      User         @relation("SentMessages", fields: [senderId], references: [id])
+  reactions   Reaction[]
+  attachments Attachment[]
+  readBy      ReadReceipt[]
+  pinnedInChat Chat?       @relation("PinnedMessage")
+
+  @@index([chatId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  messageId    String   @map("message_id")
+  uploadedBy   String   @map("uploaded_by")
+  type         String   // image, video, audio, voice_note, document
+  url          String
+  publicId     String   @map("public_id") // cloudinary public_id
+  thumbnailUrl String?  @map("thumbnail_url")
+  fileName     String   @map("file_name")
+  mimeType     String   @map("mime_type")
+  size         Int      // bytes
+  duration     Int?     // seconds (for audio/video)
+  width        Int?     // pixels
+  height       Int?     // pixels
+
+  // Voice note specific
+  waveform     Json?    // array of amplitude samples
+
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  message    Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  uploadedByUser User @relation(fields: [uploadedBy], references: [id])
+
+  @@index([messageId])
+  @@map("attachments")
+}
+
+model Reaction {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  emoji     String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("reactions")
+}
+
+model ReadReceipt {
+  id        String   @id @default(uuid())
+  messageId String   @map("message_id")
+  userId    String   @map("user_id")
+  readAt    DateTime @default(now()) @map("read_at")
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([messageId])
+  @@index([userId])
+  @@map("read_receipts")
+}
+
+// ═══════════════════════════════════════════════
+// CALLS
+// ═══════════════════════════════════════════════
+
+model Call {
+  id         String     @id @default(uuid())
+  chatId     String?    @map("chat_id")
+  callerId   String     @map("caller_id")
+  type       CallType
+  status     CallStatus @default(RINGING)
+  startedAt  DateTime?  @map("started_at")
+  endedAt    DateTime?  @map("ended_at")
+  duration   Int?       // seconds
+  createdAt  DateTime   @default(now()) @map("created_at")
+
+  caller       User             @relation("Caller", fields: [callerId], references: [id])
+  participants CallParticipant[]
+
+  @@index([callerId])
+  @@index([chatId])
+  @@map("calls")
+}
+
+model CallParticipant {
+  id       String  @id @default(uuid())
+  callId   String  @map("call_id")
+  userId   String  @map("user_id")
+  joinedAt DateTime @default(now()) @map("joined_at")
+  leftAt   DateTime? @map("left_at")
+  isMuted  Boolean  @default(false) @map("is_muted")
+  isCamOff Boolean  @default(false) @map("is_cam_off")
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+
+  @@unique([callId, userId])
+  @@index([callId])
+  @@map("call_participants")
+}
+
+// ═══════════════════════════════════════════════
+// SOCIAL
+// ═══════════════════════════════════════════════
+
+model Contact {
+  id          String   @id @default(uuid())
+  userId      String   @map("user_id")
+  contactId   String   @map("contact_id")
+  nickname    String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user    User @relation("UserContacts", fields: [userId], references: [id], onDelete: Cascade)
+  contact User @relation("ContactOf", fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contactId])
+  @@index([userId])
+  @@map("contacts")
+}
+
+model BlockedUser {
+  id        String   @id @default(uuid())
+  blockerId String   @map("blocker_id")
+  blockedId String   @map("blocked_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("BlockedBy", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+  @@map("blocked_users")
+}
+
+// ═══════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String           @map("user_id")
+  type      NotificationType
+  title     String
+  body      String?
+  data      Json?
+  isRead    Boolean          @default(false) @map("is_read")
+  readAt    DateTime?        @map("read_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
+  @@map("notifications")
+}
+
+// ═══════════════════════════════════════════════
+// STATUSES (Stories)
+// ═══════════════════════════════════════════════
+
+model Status {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  type      String   // text, image, video
+  content   String?
+  mediaUrl  String?  @map("media_url")
+  bgColor   String?  @map("bg_color")
+  expiresAt DateTime @map("expires_at")
+  viewCount Int      @default(0) @map("view_count")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("statuses")
+}
